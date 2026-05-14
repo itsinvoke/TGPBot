@@ -1,0 +1,83 @@
+name: 24/7 TGPBot & Discord Bot
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 * * * *'   # run every hour (ensures re-run & recovery)
+  workflow_dispatch:
+
+jobs:
+  run-bots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # run-time per job (adjust as needed within GitHub limits)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Guard Bot & Discord Bot (24/7)
+        env:
+          # Minecraft Bot Config
+          MC_HOST: ${{ secrets.MC_HOST }}
+          MC_PORT: ${{ secrets.MC_PORT }}
+          MC_USERNAME: ${{ secrets.MC_USERNAME }}
+          MC_VERSION: ${{ secrets.MC_VERSION }}
+          MC_TIMEOUT: ${{ secrets.MC_TIMEOUT }}
+          BOT_PASSWORD: ${{ secrets.BOT_PASSWORD }}
+
+          # Guard Bot Config
+          WHITELIST: ${{ secrets.WHITELIST }}
+          GUARD_WEBHOOK_URL: ${{ secrets.GUARD_WEBHOOK_URL }}
+          GUARD_ALERT_ROLE_ID: ${{ secrets.GUARD_ALERT_ROLE_ID }}
+          GUARD_HTTP_PORT: ${{ secrets.GUARD_HTTP_PORT }}
+          CLAN_AD: ${{ secrets.CLAN_AD }}
+
+          # Discord Bot Config
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          ALERT_CHANNEL_ID: ${{ secrets.ALERT_CHANNEL_ID }}
+          ADMIN_CHANNEL_ID: ${{ secrets.ADMIN_CHANNEL_ID }}
+          DISCORD_HTTP_PORT: ${{ secrets.DISCORD_HTTP_PORT }}
+          COMMAND_ADMIN_ROLE_ID: ${{ secrets.COMMAND_ADMIN_ROLE_ID }}
+
+        run: |
+          echo "====== TGPBot 24/7 runner ===="
+          echo "Starting guard_bot.js and discord_bot.js"
+
+          # start guard bot
+          node guard_bot.js &
+          GUARD_PID=$!
+
+          # start discord bot
+          node discord_bot.js &
+          DISCORD_PID=$!
+
+          echo "Guard PID: $GUARD_PID"
+          echo "Discord PID: $DISCORD_PID"
+
+          # monitor both processes and restart them if necessary
+          while true; do
+            if ! kill -0 "$GUARD_PID" 2>/dev/null; then
+              echo "[$(date)] Guard bot crashed/restarted — launching new instance"
+              node guard_bot.js &
+              GUARD_PID=$!
+              sleep 2
+            fi
+
+            if ! kill -0 "$DISCORD_PID" 2>/dev/null; then
+              echo "[$(date)] Discord bot crashed/restarted — launching new instance"
+              node discord_bot.js &
+              DISCORD_PID=$!
+              sleep 2
+            fi
+
+            sleep 10
+          done
