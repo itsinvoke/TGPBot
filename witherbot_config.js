@@ -14,7 +14,7 @@ module.exports = {
   prefix: '^',
 
   trustedPlayers: [
-    'BlazeF4ng',
+    'Pala_32',
     'PiercingC1aws',
     '1nvoke_',
     'pxla',
