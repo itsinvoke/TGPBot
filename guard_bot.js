@@ -1,14 +1,13 @@
 'use strict'
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────��[...]
 //  GUARD BOT — cage sentinel, clan ad, whitelist watcher, Discord alerts
 //  ENHANCED: Auto-rejoin on server restart + Whitelist-only TP acceptance
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────��[...]
 
 require('dotenv').config()
 const mineflayer  = require('mineflayer')
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
-const { elytrafly } = require('mineflayer-elytrafly')
 const Vec3        = require('vec3')
 const fs          = require('fs')
 const https       = require('https')
@@ -65,7 +64,7 @@ let activeBot                       = null
 let hasDoneInitialLobbyLogin = false
 let isFullyInServer          = false
 
-// ── Logger ────────────────────────────────────────────────────────────────
+// ── Logger ───────────────────────────────────────────────────────────��[...]
 const LOG = {
   info   : (...a) => console.log(`[INFO]   ${a.join(' ')}`),
   warn   : (...a) => console.warn(`[WARN]   ${a.join(' ')}`),
@@ -80,9 +79,9 @@ const LOG = {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────�[...]
 //  Discord webhook helpers
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────�[...]
 
 function webhookPost (payload) {
   if (!GUARD_WEBHOOK_URL) { LOG.warn('GUARD_WEBHOOK_URL not set — alert dropped') ; return Promise.resolve() }
@@ -104,7 +103,7 @@ function webhookPost (payload) {
 
 function nowStamp () {
   const d = new Date()
-  return `${d.getDate().toString().padStart(2,'0')}.${(d.getMonth()+1).toString().padStart(2,'0')}.${d.getFullYear()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`
+  return `${d.getDate().toString().padStart(2,'0')}.${(d.getMonth()+1).toString().padStart(2,'0')}.${d.getFullYear()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padSta[...]`
 }
 
 function buildEmbed (description, fields) {
@@ -141,9 +140,9 @@ async function alertIntruder (username, distance) {
   ]))
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  HTTP bridge — receives commands from discord_bot.js
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function startHttpBridge () {
   const server = http.createServer((req, res) => {
@@ -165,18 +164,18 @@ function startHttpBridge () {
   server.listen(GUARD_HTTP_PORT, () => LOG.info(`HTTP bridge listening on port ${GUARD_HTTP_PORT}`))
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  Whitelist helper
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function isWhitelisted (user) {
   const clean = user.replace(/^_+/, '')
   return WHITELIST.some(w => w === user || w === clean || user === '_' + w)
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  Anti-AFK — constant jump + crouch cycles
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function startAntiAfk (bot) {
   if (antiAfkEnabled || !bot) return
@@ -215,9 +214,9 @@ function stopAntiAfk (bot) {
   LOG.afk('Anti-AFK OFF')
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  Admin command handler
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function handleAdminCommand (raw, args, source) {
   const bot   = activeBot
@@ -261,9 +260,9 @@ function handleAdminCommand (raw, args, source) {
   reply(`Unknown command: ${raw}  |  Available: quit, run <cmd>, ad stop/start, antiafk on/off, home <name>, status`)
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  ENHANCED: Server Restart Detection
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function isServerRestartMessage (plain) {
   return SERVER_RESTART_KEYWORDS.some(keyword => plain.includes(keyword))
@@ -299,9 +298,9 @@ async function attemptRejoinAfterRestart (bot) {
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  TPA request parser
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 const TPA_REGEXES = [
   /^(\w+) has requested (?:to teleport to you|that you teleport to them)\./i,
@@ -319,9 +318,9 @@ function parseTpa (plain) {
   return null
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  Overseer protection chat-message parser
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 const OVERSEER_REGEXES = [
   { re: /\[overseer\][^\w]*(\w+)\s+placed\s+(\w+)/i, suspect: 1, block: 2 },
@@ -337,9 +336,9 @@ function parseOverseer (plain) {
   return null
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  Per-tick guard logic
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function setupGuardTick (bot) {
   bot.on('physicsTick', () => {
@@ -365,9 +364,9 @@ function setupGuardTick (bot) {
   })
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  Block update watcher (TNT / danger blocks)
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function setupBlockWatch (bot) {
   bot.on('blockUpdate', (_old, newBlock) => {
@@ -389,9 +388,9 @@ function setupBlockWatch (bot) {
   })
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  installMonotonicChatTimestamp
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function installMonotonicChatTimestamp (botInstance) {
   try {
@@ -412,9 +411,9 @@ function installMonotonicChatTimestamp (botInstance) {
   } catch (err) { console.error('[CHAT] Failed to install monotonic timestamps:', err.message) }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  createBot
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function createBot () {
   const bot = mineflayer.createBot({
@@ -427,7 +426,7 @@ function createBot () {
 
   activeBot = bot
   bot.loadPlugin(pathfinder)
-  bot.loadPlugin(elytrafly)
+  // elytrafly plugin removed (not required)
   bot._client.once('playerJoin', () => installMonotonicChatTimestamp(bot))
 
   const tickTimes = [] ; let lastTick = null
@@ -450,9 +449,9 @@ function createBot () {
   return bot
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  registerBotEvents — ENHANCED with server restart & whitelist-only TP
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function registerBotEvents (bot) {
   let lastLoggedPlain = null
@@ -667,9 +666,9 @@ function registerBotEvents (bot) {
   })
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  Reconnect helpers
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function resetRuntimeState () {
   hasDoneInitialLobbyLogin = false
@@ -700,9 +699,9 @@ function scheduleReconnect () {
   }, delay)
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  Startup
-// ────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 startHttpBridge()
 const bot = createBot()
