@@ -1,18 +1,18 @@
 'use strict'
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────��[...]
 //  DISCORD BOT — Overseer protection relay
 //  • Receives guard_bot.js alerts → posts embeds to alert channel
 //  • Admin commands in Discord → forwarded to guard_bot.js via HTTP
 //  Requires: discord.js@14  (npm install discord.js)
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────��[...]
 
 require('dotenv').config()
 const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } = require('discord.js')
 const http  = require('http')
 const https = require('https')
 
-// ── Env vars ─────────────────────────────────────────────────────────────────
+// ── Env vars ───────────────────────────────────────────────────────────[...]
 const DISCORD_TOKEN      = process.env.DISCORD_TOKEN       || ''
 const ALERT_CHANNEL_ID   = process.env.ALERT_CHANNEL_ID    || ''
 const ADMIN_CHANNEL_ID   = process.env.ADMIN_CHANNEL_ID    || ''    // optional: separate admin channel
@@ -20,11 +20,14 @@ const ALERT_ROLE_ID      = process.env.GUARD_ALERT_ROLE_ID || ''
 const GUARD_HTTP_PORT    = parseInt(process.env.GUARD_HTTP_PORT) || 3001
 const DISCORD_HTTP_PORT  = parseInt(process.env.DISCORD_HTTP_PORT) || 3002
 const COMMAND_PREFIX     = '!'
+// ID of the Discord role that is allowed to run bot commands.
+// Provided by user: 1503664307521589363
+const COMMAND_ADMIN_ROLE_ID = process.env.COMMAND_ADMIN_ROLE_ID || '1503664307521589363'
 
 if (!DISCORD_TOKEN) { console.error('[FATAL] DISCORD_TOKEN not set') ; process.exit(1) }
 if (!ALERT_CHANNEL_ID) { console.warn('[WARN] ALERT_CHANNEL_ID not set — alerts will be logged only') }
 
-// ── Discord client ────────────────────────────────────────────────────────────
+// ── Discord client ─────────────────────────────────────────────────────────[...]
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -33,9 +36,9 @@ const client = new Client({
   ]
 })
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────�[...]
 //  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────�[...]
 
 function nowStamp () {
   const d = new Date()
@@ -76,9 +79,9 @@ async function postAlertEmbed (type, data) {
   await channel.send({ content: roleMention || undefined, embeds: [embed] }).catch(e => console.error('[DISCORD] Send error:', e.message))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────�[...]
 //  Send command to guard_bot.js HTTP bridge
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 function sendToGuardBot (command, args = []) {
   return new Promise((resolve, reject) => {
@@ -103,9 +106,9 @@ function sendToGuardBot (command, args = []) {
   })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────�[...]
 //  Discord event: ready
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 client.once('ready', () => {
   console.log(`[DISCORD] Logged in as ${client.user.tag}`)
@@ -113,13 +116,20 @@ client.once('ready', () => {
   console.log(`[DISCORD] Listening for ${COMMAND_PREFIX} commands`)
 })
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────�[...]
 //  Discord event: messageCreate — admin commands
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 client.on('messageCreate', async (msg) => {
   if (msg.author.bot) return
   if (!msg.content.startsWith(COMMAND_PREFIX)) return
+
+  // Restrict commands to members with the configured admin role
+  const member = msg.member
+  if (!member || !member.roles || !member.roles.cache.has(COMMAND_ADMIN_ROLE_ID)) {
+    try { await msg.reply('❌ You do not have permission to use bot commands. (Admin role required)') } catch {}
+    return
+  }
 
   // Optionally restrict to admin channel
   if (ADMIN_CHANNEL_ID && msg.channelId !== ADMIN_CHANNEL_ID && msg.channelId !== ALERT_CHANNEL_ID) return
@@ -226,11 +236,11 @@ client.on('messageCreate', async (msg) => {
   }
 })
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  HTTP server — receives alert POSTs from guard_bot.js
 //  (guard_bot.js can also POST directly to the Discord webhook instead;
 //   this server is an alternative bridge for richer control)
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 http.createServer((req, res) => {
   if (req.method !== 'POST' || req.url !== '/alert') {
@@ -253,9 +263,9 @@ http.createServer((req, res) => {
   console.log(`[DISCORD BOT] Alert HTTP server on port ${DISCORD_HTTP_PORT}`)
 })
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 //  Login
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────[...]
 
 client.login(DISCORD_TOKEN).catch(e => {
   console.error('[FATAL] Discord login failed:', e.message)
