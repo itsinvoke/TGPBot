@@ -1,82 +1,62 @@
-name: 24/7 TGPBot & Discord Bot
+# CI workflow to ensure DISCORD_TOKEN is present, write .env, and run the bot.
+# Paste this into .github/workflows/fix-discord-token.yml
+# If you stored the secret under Settings → Environments → <env-name> → Secrets,
+# uncomment and set `environment:` to that environment name below.
+name: Run TGPBot (with DISCORD_TOKEN check)
 
 on:
   push:
     branches: [ main ]
-  schedule:
-    - cron: '0 * * * *'   # run every hour (ensures re-run & recovery)
   workflow_dispatch:
+  # Optionally enable for other branches or events as needed.
 
 jobs:
-  run-bots:
+  run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # run-time per job (adjust as needed within GitHub limits)
+    # If you used an Environment-level secret, uncomment and set the environment name:
+    # environment: my-environment-name
+    # Expose the secret to steps via job-level env (safe: value is never printed)
+    env:
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify DISCORD_TOKEN is set (safe — does not print the token)
+        run: |
+          # Detect pull_request runs which may come from forks where secrets are not exposed
+          if [ -z "${DISCORD_TOKEN}" ]; then
+            if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+              echo "::error ::FATAL: DISCORD_TOKEN is NOT set. This run was triggered by a pull_request and may be from a fork; repository secrets are not exposed to fork PRs."
+            else
+              echo "::error ::FATAL: DISCORD_TOKEN is NOT set"
+            fi
+            exit 1
+          else
+            echo "DISCORD_TOKEN is set (value hidden)"
+          fi
+
+      - name: Create .env from DISCORD_TOKEN (if your app expects a .env file)
+        run: |
+          cat > .env <<EOF
+          DISCORD_TOKEN=${DISCORD_TOKEN}
+          EOF
+          echo ".env written (token not shown in logs)"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '18' # adjust if your project requires a different Node version
 
       - name: Install dependencies
-        run: npm install
-
-      - name: Run Guard Bot & Discord Bot (24/7)
-        env:
-          # Minecraft Bot Config
-          MC_HOST: ${{ secrets.MC_HOST }}
-          MC_PORT: ${{ secrets.MC_PORT }}
-          MC_USERNAME: ${{ secrets.MC_USERNAME }}
-          MC_VERSION: ${{ secrets.MC_VERSION }}
-          MC_TIMEOUT: ${{ secrets.MC_TIMEOUT }}
-          BOT_PASSWORD: ${{ secrets.BOT_PASSWORD }}
-
-          # Guard Bot Config
-          WHITELIST: ${{ secrets.WHITELIST }}
-          GUARD_WEBHOOK_URL: ${{ secrets.GUARD_WEBHOOK_URL }}
-          GUARD_ALERT_ROLE_ID: ${{ secrets.GUARD_ALERT_ROLE_ID }}
-          GUARD_HTTP_PORT: ${{ secrets.GUARD_HTTP_PORT }}
-          CLAN_AD: ${{ secrets.CLAN_AD }}
-
-          # Discord Bot Config
-          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          ALERT_CHANNEL_ID: ${{ secrets.ALERT_CHANNEL_ID }}
-          ADMIN_CHANNEL_ID: ${{ secrets.ADMIN_CHANNEL_ID }}
-          DISCORD_HTTP_PORT: ${{ secrets.DISCORD_HTTP_PORT }}
-          COMMAND_ADMIN_ROLE_ID: ${{ secrets.COMMAND_ADMIN_ROLE_ID }}
-
         run: |
-          echo "====== TGPBot 24/7 runner ====\\n"
-          echo "Starting guard_bot.js and discord_bot.js"
+          npm ci
 
-          # start guard bot
-          node guard_bot.js &
-          GUARD_PID=$!
-
-          # start discord bot
-          node discord_bot.js &
-          DISCORD_PID=$!
-
-          echo "Guard PID: $GUARD_PID"
-          echo "Discord PID: $DISCORD_PID"
-
-          # monitor both processes and restart them if necessary
-          while true; do
-            if ! kill -0 "$GUARD_PID" 2>/dev/null; then
-              echo "[$(date)] Guard bot crashed/restarted — launching new instance"
-              node guard_bot.js &
-              GUARD_PID=$!
-              sleep 2
-            fi
-
-            if ! kill -0 "$DISCORD_PID" 2>/dev/null; then
-              echo "[$(date)] Discord bot crashed/restarted — launching new instance"
-              node discord_bot.js &
-              DISCORD_PID=$!
-              sleep 2
-            fi
-
-            sleep 10
-          done
+      - name: Run bot (example)
+        env:
+          # map the secret into the runtime step as well (keeps it available to the process)
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+        run: |
+          # Replace the following with your actual start command if different:
+          npm start
