@@ -19,10 +19,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Run Guard Bot & Discord Bot (24/7)
         env:
@@ -49,7 +48,7 @@ jobs:
           COMMAND_ADMIN_ROLE_ID: ${{ secrets.COMMAND_ADMIN_ROLE_ID }}
 
         run: |
-          echo "====== TGPBot 24/7 runner ===="
+          echo "====== TGPBot 24/7 runner ====\\n"
           echo "Starting guard_bot.js and discord_bot.js"
 
           # start guard bot
