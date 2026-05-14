@@ -1,62 +1,101 @@
-# CI workflow to ensure DISCORD_TOKEN is present, write .env, and run the bot.
-# Paste this into .github/workflows/fix-discord-token.yml
-# If you stored the secret under Settings → Environments → <env-name> → Secrets,
-# uncomment and set `environment:` to that environment name below.
-name: Run TGPBot (with DISCORD_TOKEN check)
-
+# Run the bots with repository secrets injected into the job environment.
+# WARNING: Secrets are NOT provided to workflows triggered by forks (pull requests from forks).
+# Use push/workflow_dispatch or configure a secure pull_request_target pattern if you need to handle PRs.
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
-  # Optionally enable for other branches or events as needed.
 
 jobs:
-  run-bot:
+  run-bots:
+    name: Run Guard + Discord bots (with secrets)
     runs-on: ubuntu-latest
-    # If you used an Environment-level secret, uncomment and set the environment name:
-    # environment: my-environment-name
-    # Expose the secret to steps via job-level env (safe: value is never printed)
+
+    # Map repository secrets into the job environment so Node sees them as process.env.*
     env:
+      # Required: set these exact names in your repository Secrets → Actions
       DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+      MC_USERNAME:    ${{ secrets.MC_USERNAME }}
+      MC_PASSWORD:    ${{ secrets.MC_PASSWORD }}
+      MC_HOST:        ${{ secrets.MC_HOST }}
+      MC_PORT:        ${{ secrets.MC_PORT }}
+      # Add any other secrets your bots require, e.g. OAUTH_TOKEN: ${{ secrets.OAUTH_TOKEN }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Verify DISCORD_TOKEN is set (safe — does not print the token)
-        run: |
-          # Detect pull_request runs which may come from forks where secrets are not exposed
-          if [ -z "${DISCORD_TOKEN}" ]; then
-            if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-              echo "::error ::FATAL: DISCORD_TOKEN is NOT set. This run was triggered by a pull_request and may be from a fork; repository secrets are not exposed to fork PRs."
-            else
-              echo "::error ::FATAL: DISCORD_TOKEN is NOT set"
-            fi
-            exit 1
-          else
-            echo "DISCORD_TOKEN is set (value hidden)"
-          fi
-
-      - name: Create .env from DISCORD_TOKEN (if your app expects a .env file)
-        run: |
-          cat > .env <<EOF
-          DISCORD_TOKEN=${DISCORD_TOKEN}
-          EOF
-          echo ".env written (token not shown in logs)"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18' # adjust if your project requires a different Node version
+          node-version: "18"
 
       - name: Install dependencies
-        run: |
-          npm ci
+        run: npm ci
 
-      - name: Run bot (example)
-        env:
-          # map the secret into the runtime step as well (keeps it available to the process)
-          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+      - name: Verify required secrets are present
         run: |
-          # Replace the following with your actual start command if different:
-          npm start
+          missing=0
+          check() {
+            if [ -z "${!1}" ]; then
+              echo "::error::Missing required env $1"
+              missing=1
+            else
+              echo "$1 present"
+            fi
+          }
+          # List the env vars you need validated (do NOT echo values)
+          check DISCORD_TOKEN
+          check MC_USERNAME
+          # comment/uncomment additional checks as needed:
+          check MC_PASSWORD
+          check MC_HOST
+          check MC_PORT
+
+          if [ "$missing" -eq 1 ]; then
+            echo "::error::One or more required secrets are missing. See repository Settings → Secrets → Actions."
+            exit 1
+          fi
+
+      - name: Basic environment debug (non-sensitive)
+        # Shows which Node is used and prints process.env keys count without printing secret values
+        run: |
+          node -v
+          echo "Installed node version above"
+          # Print non-secret confirmation: how many env vars are set (do NOT print values)
+          echo "Env vars count: $(env | wc -l)"
+
+      - name: Start bots (runs until process exits or action times out)
+        # This step will start both bots. If your bots run continuously, this job will stay running until they exit or the job times out.
+        # If you prefer to run a short smoke test instead, replace these commands with a script that runs for a limited time.
+        run: |
+          # Start guard bot in background and capture PID
+          nohup node guard_bot.js > guard_bot.log 2>&1 &
+          GUARD_PID=$!
+          echo "Guard bot started with PID $GUARD_PID (logs: guard_bot.log)"
+
+          # Start discord bot in background and capture PID
+          nohup node discord_bot.js > discord_bot.log 2>&1 &
+          DISCORD_PID=$!
+          echo "Discord bot started with PID $DISCORD_PID (logs: discord_bot.log)"
+
+          # Give them a few seconds to initialize, then show the last lines of logs (safe to show)
+          sleep 8
+          echo "----- guard_bot.log (tail) -----"
+          tail -n 100 guard_bot.log || true
+          echo "----- discord_bot.log (tail) -----"
+          tail -n 100 discord_bot.log || true
+
+          # Optional: wait for both processes (comment out to let the job complete and leave them running)
+          # wait $GUARD_PID $DISCORD_PID
+
+        # If you want the action to stop after a short smoke-test instead of running indefinitely,
+        # either remove the `wait` and let the job complete (processes will be killed when runner finishes),
+        # or add `sleep 300` (run for 5 minutes) and then kill the processes:
+        #
+        # run: |
+        #   nohup node guard_bot.js > guard_bot.log 2>&1 & GUARD_PID=$!
+        #   nohup node discord_bot.js > discord_bot.log 2>&1 & DISCORD_PID=$!
+        #   sleep 300
+        #   kill $GUARD_PID $DISCORD_PID || true
+        #   tail -n 200 guard_bot.log discord_bot.log
