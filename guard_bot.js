@@ -1,9 +1,9 @@
 'use strict'
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 //  GUARD BOT — cage sentinel, clan ad, whitelist watcher, Discord alerts
-//  Connection settings pulled from witherbot_config.js (identical to bot.js)
-// ─────────────────────────────────────────────────────────────────────────────
+//  ENHANCED: Auto-rejoin on server restart + Whitelist-only TP acceptance
+// ────────────────────────────────────────────────────────────────────────────
 
 require('dotenv').config()
 const mineflayer  = require('mineflayer')
@@ -16,9 +16,9 @@ const http        = require('http')
 const { formatChatMessage, stripAnsi } = require('./chatColor.js')
 
 // ── Environment variables ─────────────────────────────────────────────────
-const GUARD_WEBHOOK_URL  = process.env.GUARD_WEBHOOK_URL   || ''   // Discord webhook for alerts
-const GUARD_ALERT_ROLE   = process.env.GUARD_ALERT_ROLE_ID || ''   // Discord role ID to ping
-const GUARD_HTTP_PORT    = parseInt(process.env.GUARD_HTTP_PORT) || 3001  // bridge port
+const GUARD_WEBHOOK_URL  = process.env.GUARD_WEBHOOK_URL   || ''
+const GUARD_ALERT_ROLE   = process.env.GUARD_ALERT_ROLE_ID || ''
+const GUARD_HTTP_PORT    = parseInt(process.env.GUARD_HTTP_PORT) || 3001
 const CLAN_AD_MSG        = process.env.CLAN_AD || 'Join our clan! discord.gg/yourserver'
 
 // ── Guard constants ───────────────────────────────────────────────────────
@@ -29,18 +29,31 @@ const WHITELIST = (process.env.WHITELIST || '')
   .filter(Boolean)
 const AD_INTERVAL_TICKS  = 7500
 const DEFAULT_HOME       = 'Home1'
-const RENDER_DIST_SQ     = 64 * 64           // squared distance to avoid sqrt in hot loop
-const ALERT_COOLDOWN_MS  = 5 * 60 * 1000    // 5 min before re-alerting same player
+const RENDER_DIST_SQ     = 64 * 64
+const ALERT_COOLDOWN_MS  = 5 * 60 * 1000
 const DANGER_BLOCKS      = new Set(['tnt', 'respawn_anchor', 'end_crystal'])
+
+// ── ENHANCED: Server restart detection & rejoin ────────────────────────────
+const REJOIN_DELAY_MS    = 15000  // Wait 15 seconds for server to come back online
+const SERVER_RESTART_KEYWORDS = [
+  'Server restarts in',
+  'The target server is offline',
+  'You have been sent to the backup server',
+  'You were kicked from main-server: Server closed',
+  'The main server is restarting',
+  'We will be back soon'
+]
 
 // ── Runtime state ─────────────────────────────────────────────────────────
 let adEnabled        = true
 let antiAfkEnabled   = false
 let antiAfkHandle    = null
 let tickCounter      = 0
-let playerAlertMap   = new Map()   // username → last alert timestamp
+let playerAlertMap   = new Map()
+let serverRestartDetected = false
+let rejoinAttempts   = 0
 
-// ── Reconnect state (identical to bot.js) ─────────────────────────────────
+// ── Reconnect state ───────────────────────────────────────────────────────
 const BASE_RECONNECT_MS             = 10000
 const MAX_RECONNECT_MS              = 180000
 let reconnectTimer                  = null
@@ -52,7 +65,7 @@ let activeBot                       = null
 let hasDoneInitialLobbyLogin = false
 let isFullyInServer          = false
 
-// ── Logger (identical to bot.js) ──────────────────────────────────────────
+// ── Logger ────────────────────────────────────────────────────────────────
 const LOG = {
   info   : (...a) => console.log(`[INFO]   ${a.join(' ')}`),
   warn   : (...a) => console.warn(`[WARN]   ${a.join(' ')}`),
@@ -62,13 +75,14 @@ const LOG = {
   tpa    : (...a) => console.log(`[TPA]    ${a.join(' ')}`),
   afk    : (...a) => console.log(`[AFK]    ${a.join(' ')}`),
   ad     : (...a) => console.log(`[AD]     ${a.join(' ')}`),
+  restart: (...a) => console.log(`[RESTART] ${a.join(' ')}`),
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 //  Discord webhook helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 
 function webhookPost (payload) {
   if (!GUARD_WEBHOOK_URL) { LOG.warn('GUARD_WEBHOOK_URL not set — alert dropped') ; return Promise.resolve() }
@@ -127,9 +141,9 @@ async function alertIntruder (username, distance) {
   ]))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  HTTP bridge  — receives commands from discord_bot.js
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+//  HTTP bridge — receives commands from discord_bot.js
+// ────────────────────────────────────────────────────────────────────────────
 
 function startHttpBridge () {
   const server = http.createServer((req, res) => {
@@ -151,18 +165,18 @@ function startHttpBridge () {
   server.listen(GUARD_HTTP_PORT, () => LOG.info(`HTTP bridge listening on port ${GUARD_HTTP_PORT}`))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Whitelist helper (identical logic to bot.js)
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+//  Whitelist helper
+// ────────────────────────────────────────────────────────────────────────────
 
 function isWhitelisted (user) {
   const clean = user.replace(/^_+/, '')
   return WHITELIST.some(w => w === user || w === clean || user === '_' + w)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 //  Anti-AFK — constant jump + crouch cycles
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 
 function startAntiAfk (bot) {
   if (antiAfkEnabled || !bot) return
@@ -201,9 +215,9 @@ function stopAntiAfk (bot) {
   LOG.afk('Anti-AFK OFF')
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Admin command handler  (^ prefix in-game whisper OR discord HTTP bridge)
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+//  Admin command handler
+// ────────────────────────────────────────────────────────────────────────────
 
 function handleAdminCommand (raw, args, source) {
   const bot   = activeBot
@@ -213,7 +227,6 @@ function handleAdminCommand (raw, args, source) {
     if (source !== 'discord' && bot) bot.chat(`/msg ${source} ${msg}`)
   }
 
-  // ^quit — stop bot + process
   if (cmd === 'quit') {
     reply('Shutting down...')
     if (bot) { try { bot.quit('Admin quit command') } catch {} }
@@ -221,7 +234,6 @@ function handleAdminCommand (raw, args, source) {
     return
   }
 
-  // ^run <mc command>
   if (cmd.startsWith('run ') || cmd.startsWith('run\t')) {
     const mcCmd = raw.slice(4).trim()
     if (!mcCmd) { reply('Usage: ^run <command>') ; return }
@@ -229,22 +241,18 @@ function handleAdminCommand (raw, args, source) {
     return
   }
 
-  // ^Ad Stop / ^Ad Start
   if (cmd === 'ad stop')  { adEnabled = false ; reply('Clan ad stopped.')  ; return }
   if (cmd === 'ad start') { adEnabled = true  ; reply('Clan ad started.')  ; return }
 
-  // ^Antiafk On / Off
   if (cmd === 'antiafk on'  || cmd === 'anti-afk on')  { startAntiAfk(bot) ; reply('Anti-AFK enabled.')  ; return }
   if (cmd === 'antiafk off' || cmd === 'anti-afk off') { stopAntiAfk(bot)  ; reply('Anti-AFK disabled.') ; return }
 
-  // ^home <name>
   if (cmd.startsWith('home ')) {
     const home = cmd.slice(5).trim() || DEFAULT_HOME
     if (bot) { bot.chat(`/home ${home}`) ; reply(`Going to ${home}...`) }
     return
   }
 
-  // ^status
   if (cmd === 'status') {
     reply(`Ad:${adEnabled?'ON':'OFF'} | AntiAFK:${antiAfkEnabled?'ON':'OFF'} | Players:${playerAlertMap.size} alerted | Ticks:${tickCounter}`)
     return
@@ -253,9 +261,47 @@ function handleAdminCommand (raw, args, source) {
   reply(`Unknown command: ${raw}  |  Available: quit, run <cmd>, ad stop/start, antiafk on/off, home <name>, status`)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  TPA request parser  — handles common Essentials / EssentialsX formats
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+//  ENHANCED: Server Restart Detection
+// ────────────────────────────────────────────────────────────────────────────
+
+function isServerRestartMessage (plain) {
+  return SERVER_RESTART_KEYWORDS.some(keyword => plain.includes(keyword))
+}
+
+function handleServerRestart () {
+  if (serverRestartDetected) return
+  LOG.restart('Server restart detected! Will rejoin after server comes back online...')
+  serverRestartDetected = true
+  rejoinAttempts = 0
+}
+
+async function attemptRejoinAfterRestart (bot) {
+  if (!serverRestartDetected) return
+  
+  rejoinAttempts++
+  LOG.restart(`Rejoin attempt #${rejoinAttempts} after waiting ${REJOIN_DELAY_MS}ms for server...`)
+  
+  try {
+    // Try to connect after restart delay
+    const newBot = createBot()
+    registerBotEvents(newBot)
+    LOG.restart('✅ Reconnected after server restart!')
+    serverRestartDetected = false
+    rejoinAttempts = 0
+  } catch (err) {
+    LOG.warn(`Rejoin attempt #${rejoinAttempts} failed: ${err.message}`)
+    if (rejoinAttempts < 5) {
+      setTimeout(() => attemptRejoinAfterRestart(bot), REJOIN_DELAY_MS)
+    } else {
+      LOG.error('Max rejoin attempts reached after server restart')
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  TPA request parser
+// ────────────────────────────────────────────────────────────────────────────
 
 const TPA_REGEXES = [
   /^(\w+) has requested (?:to teleport to you|that you teleport to them)\./i,
@@ -273,16 +319,13 @@ function parseTpa (plain) {
   return null
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 //  Overseer protection chat-message parser
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 
 const OVERSEER_REGEXES = [
-  // "[Overseer] PLAYER placed BLOCK"
   { re: /\[overseer\][^\w]*(\w+)\s+placed\s+(\w+)/i, suspect: 1, block: 2 },
-  // "PLAYER placed tnt|respawn_anchor|end_crystal"
   { re: /(\w+)\s+placed\s+(tnt|respawn[ _]anchor|end[ _]crystal)/i, suspect: 1, block: 2 },
-  // "tnt placed by PLAYER"
   { re: /(tnt|respawn[ _]anchor|end[ _]crystal)\s+placed\s+by\s+(\w+)/i, block: 1, suspect: 2 },
 ]
 
@@ -294,21 +337,19 @@ function parseOverseer (plain) {
   return null
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Per-tick guard logic  (physicsTick listener)
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+//  Per-tick guard logic
+// ────────────────────────────────────────────────────────────────────────────
 
 function setupGuardTick (bot) {
   bot.on('physicsTick', () => {
     tickCounter++
 
-    // ── Clan ad ──────────────────────────────────────────────────────────
     if (adEnabled && isFullyInServer && tickCounter % AD_INTERVAL_TICKS === 0) {
       LOG.ad('Sending clan ad')
       try { bot.chat(CLAN_AD_MSG) } catch {}
     }
 
-    // ── Player scan (every 20 ticks ≈ 1 second) ──────────────────────────
     if (tickCounter % 20 !== 0 || !bot.entity) return
     const myPos = bot.entity.position
     for (const id of Object.keys(bot.entities)) {
@@ -324,9 +365,9 @@ function setupGuardTick (bot) {
   })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Block update watcher  (TNT / danger blocks)
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+//  Block update watcher (TNT / danger blocks)
+// ────────────────────────────────────────────────────────────────────────────
 
 function setupBlockWatch (bot) {
   bot.on('blockUpdate', (_old, newBlock) => {
@@ -336,7 +377,6 @@ function setupBlockWatch (bot) {
     const dist = Math.hypot(bp.x - mp.x, bp.y - mp.y, bp.z - mp.z)
     if (dist > 64) return
 
-    // Find nearest non-whitelisted player in render distance as suspect
     let suspect = 'Unknown', bestDist = Infinity
     for (const id of Object.keys(bot.entities)) {
       const e = bot.entities[id]
@@ -349,9 +389,9 @@ function setupBlockWatch (bot) {
   })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  installMonotonicChatTimestamp  — identical to bot.js
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+//  installMonotonicChatTimestamp
+// ────────────────────────────────────────────────────────────────────────────
 
 function installMonotonicChatTimestamp (botInstance) {
   try {
@@ -372,17 +412,17 @@ function installMonotonicChatTimestamp (botInstance) {
   } catch (err) { console.error('[CHAT] Failed to install monotonic timestamps:', err.message) }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  createBot  — identical to bot.js (same host/port/version/username/flags)
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+//  createBot
+// ────────────────────────────────────────────────────────────────────────────
 
 function createBot () {
   const bot = mineflayer.createBot({
-  host: process.env.MC_HOST,
-  port: parseInt(process.env.MC_PORT),
-  username: process.env.MC_USERNAME,
-  version: process.env.MC_VERSION,
-  checkTimeoutInterval: parseInt(process.env.MC_TIMEOUT),
+    host: process.env.MC_HOST,
+    port: parseInt(process.env.MC_PORT),
+    username: process.env.MC_USERNAME,
+    version: process.env.MC_VERSION,
+    checkTimeoutInterval: parseInt(process.env.MC_TIMEOUT),
   })
 
   activeBot = bot
@@ -390,7 +430,6 @@ function createBot () {
   bot.loadPlugin(elytrafly)
   bot._client.once('playerJoin', () => installMonotonicChatTimestamp(bot))
 
-  // TPS tracking (identical to bot.js)
   const tickTimes = [] ; let lastTick = null
   bot.on('physicsTick', () => {
     const now = Date.now()
@@ -411,63 +450,57 @@ function createBot () {
   return bot
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  registerBotEvents  — login/portal flow identical to bot.js;
-//  guard-specific handlers added
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+//  registerBotEvents — ENHANCED with server restart & whitelist-only TP
+// ────────────────────────────────────────────────────────────────────────────
 
 function registerBotEvents (bot) {
   let lastLoggedPlain = null
 
-  // ── login ────────────────────────────────────────────────────────────────
   bot.once('login', () => {
     console.log('[INFO] Bot logged in.')
     reconnectAttempts = 0
   })
 
-  // ── spawn ────────────────────────────────────────────────────────────────
   bot.on('spawn', () => {
-  let hasLoggedIn = false
+    let hasLoggedIn = false
+    console.log('[INFO] Spawned — preparing login sequence')
 
-  console.log('[INFO] Spawned — preparing login sequence')
-
-  setTimeout(() => {
-    const pw = process.env.BOT_PASSWORD
-
-    if (!pw) {
-      console.warn('[WARN] BOT_PASSWORD not set.')
-      return
-    }
-
-    console.log('[LOGIN] Sending /login')
-
-    bot.chat(`/login ${pw}`)
-
-    hasLoggedIn = true
-
-    // movement after login (same logic as your script)
     setTimeout(() => {
-      try {
-        bot.setControlState('forward', true)
-        bot.setControlState('sprint', true)
-        bot.setControlState('jump', true)
+      const pw = process.env.BOT_PASSWORD
+      if (!pw) {
+        console.warn('[WARN] BOT_PASSWORD not set.')
+        return
+      }
+      console.log('[LOGIN] Sending /login')
+      bot.chat(`/login ${pw}`)
+      hasLoggedIn = true
 
-        setTimeout(() => {
-          bot.clearControlStates()
-          console.log('[BOT] Ready after login sequence')
-        }, 10000)
-      } catch {}
+      setTimeout(() => {
+        try {
+          bot.setControlState('forward', true)
+          bot.setControlState('sprint', true)
+          bot.setControlState('jump', true)
+          setTimeout(() => {
+            bot.clearControlStates()
+            console.log('[BOT] Ready after login sequence')
+          }, 10000)
+        } catch {}
+      }, 3000)
     }, 3000)
+  })
 
-  }, 3000)
-})
-
-  // ── messagestr (system messages) — identical portal-walk logic ───────────
   bot.on('messagestr', (message) => {
     const plain = stripAnsi(message)
     lastLoggedPlain = plain
 
-    // ── Hub login + portal walk (identical to bot.js) ──────────────────
+    // ── ENHANCED: Server restart detection ──────────────────────────────────
+    if (isServerRestartMessage(plain)) {
+      handleServerRestart()
+      // Schedule rejoin after server comes back online
+      setTimeout(() => attemptRejoinAfterRestart(bot), REJOIN_DELAY_MS)
+    }
+
     if (/you are now logged in! please enter the server through the portal\./i.test(plain) && !hasDoneInitialLobbyLogin) {
       hasDoneInitialLobbyLogin = true ; isFullyInServer = false
       console.log('Lobby login successful! Walking into portal...')
@@ -526,7 +559,6 @@ function registerBotEvents (bot) {
       isFullyInServer = true
     }
 
-    // ── Chat cooldown detection (identical to bot.js) ──────────────────
     const cdMatch = /Please wait (\d+(?:\.\d+)?) seconds before sending another message!/i.exec(plain)
     if (cdMatch) {
       const secs = parseFloat(cdMatch[1])
@@ -535,17 +567,8 @@ function registerBotEvents (bot) {
 
     if (/incorrect password|wrong password/i.test(plain)) console.error('[ERROR] Login failed: incorrect password.')
     if (/please register/i.test(plain)) console.error('[ERROR] Login failed: account not registered.')
-
-    // ── Server restart (identical to bot.js) ───────────────────────────
-    const rm = /Server restarts in (\d+)s/i.exec(plain)
-    if (rm || plain === 'The target server is offline now! You have been sent to the backup server while it goes back online.'
-           || plain === 'You were kicked from main-server: Server closed'
-           || plain === 'The main server is restarting. We will be back soon! Join our Discord with /discord command in the meantime.') {
-      console.log('Server restart detected.') ; isRestarting = true
-    }
   })
 
-  // ── message (JSON chat) ──────────────────────────────────────────────────
   bot.on('message', (jsonMsg, position) => {
     const raw    = jsonMsg.toString ? jsonMsg.toString() : (jsonMsg.text || '')
     const plain  = stripAnsi(raw)
@@ -556,50 +579,48 @@ function registerBotEvents (bot) {
       lastLoggedPlain = plain
     }
 
-    // ── Overseer protection messages ────────────────────────────────────
     const ovMatch = parseOverseer(plain)
     if (ovMatch) {
       alertBlockPlaced(ovMatch.block, ovMatch.suspect).catch(() => {})
     }
 
-    // ── TPA from chat (some servers send as system message) ─────────────
+    // ── ENHANCED: Whitelist-only TP acceptance ───────────────────────────────
     const tpaUser = parseTpa(plain)
     if (tpaUser) {
       LOG.tpa(`TPA request from ${tpaUser}`)
       if (isWhitelisted(tpaUser)) {
-        LOG.tpa(`Accepting TPA from whitelisted: ${tpaUser}`)
+        LOG.tpa(`✅ ACCEPTING TPA from whitelisted: ${tpaUser}`)
         setTimeout(() => { try { bot.chat(`/tpy ${tpaUser}`) } catch {} }, 1000)
       } else {
-        LOG.tpa(`Ignoring TPA from non-whitelisted: ${tpaUser}`)
+        LOG.tpa(`❌ REJECTING TPA from non-whitelisted: ${tpaUser}`)
+        setTimeout(() => { try { bot.chat(`/tpn ${tpaUser}`) } catch {} }, 1000)
       }
     }
   })
 
-  // ── whisper — admin commands with ^ prefix (whitelisted only) ────────────
   bot.on('whisper', (username, message) => {
     if (username === bot.username) return
-
-    // Log all whispers
     console.log(`[WHISPER] ${username}: ${message}`)
 
-    // ^ admin commands (any whitelisted player)
     if (message.startsWith(ADMIN_PREFIX) && isWhitelisted(username)) {
       const body = message.slice(ADMIN_PREFIX.length).trim()
       handleAdminCommand(body, [], username)
       return
     }
 
-    // TPA pattern can also come through whispers
+    // ── ENHANCED: Whitelist-only TP via whisper ──────────────────────────────
     const tpaUser = parseTpa(message)
     if (tpaUser && tpaUser === username) {
       if (isWhitelisted(username)) {
-        LOG.tpa(`Accepting TPA (whisper) from ${username}`)
+        LOG.tpa(`✅ ACCEPTING TPA (whisper) from ${username}`)
         setTimeout(() => { try { bot.chat(`/tpy ${username}`) } catch {} }, 1000)
+      } else {
+        LOG.tpa(`❌ REJECTING TPA (whisper) from non-whitelisted: ${username}`)
+        setTimeout(() => { try { bot.chat(`/tpn ${username}`) } catch {} }, 1000)
       }
     }
   })
 
-  // ── death — instant respawn, go home ─────────────────────────────────────
   bot.on('death', () => {
     LOG.guard('Bot died — respawning immediately')
     try { bot.respawn() } catch {}
@@ -608,11 +629,9 @@ function registerBotEvents (bot) {
     }, 3000)
   })
 
-  // ── Guard-specific tick logic ─────────────────────────────────────────────
   setupGuardTick(bot)
   setupBlockWatch(bot)
 
-  // ── error / end / kicked (identical to bot.js) ────────────────────────────
   bot.on('error', (err) => {
     const msg = err?.message || String(err)
     if (msg.includes('timed out') || msg.includes('keepAlive') || msg.includes('socketClosed')) return
@@ -628,7 +647,13 @@ function registerBotEvents (bot) {
       : reason === 'keepAliveError' ? 'Server timed out' : reason
     console.log(`[DISCONNECTED] ${label}`)
     stopAntiAfk(null)
-    scheduleReconnect()
+    
+    // ── ENHANCED: If server restarted, try rejoin; else normal reconnect ─────
+    if (serverRestartDetected) {
+      setTimeout(() => attemptRejoinAfterRestart(bot), REJOIN_DELAY_MS)
+    } else {
+      scheduleReconnect()
+    }
   })
 
   bot.on('kicked', (reason) => {
@@ -642,9 +667,9 @@ function registerBotEvents (bot) {
   })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Reconnect helpers  — identical to bot.js
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
+//  Reconnect helpers
+// ────────────────────────────────────────────────────────────────────────────
 
 function resetRuntimeState () {
   hasDoneInitialLobbyLogin = false
@@ -675,9 +700,9 @@ function scheduleReconnect () {
   }, delay)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 //  Startup
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 
 startHttpBridge()
 const bot = createBot()
@@ -685,3 +710,4 @@ registerBotEvents(bot)
 console.log(`[GUARD] Connecting to ${process.env.MC_HOST}:${process.env.MC_PORT} as ${process.env.MC_USERNAME}`)
 console.log(`[GUARD] Whitelist: ${WHITELIST.join(', ') || '(none)'}`)
 console.log(`[GUARD] Ad every ${AD_INTERVAL_TICKS} ticks | Default home: ${DEFAULT_HOME}`)
+console.log(`[GUARD] ✨ ENHANCED: Auto-rejoin on server restart + Whitelist-only TP`)
