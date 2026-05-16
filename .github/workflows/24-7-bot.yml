@@ -19,6 +19,8 @@ jobs:
       MC_PASSWORD:    ${{ secrets.MC_PASSWORD }}
       MC_HOST:        ${{ secrets.MC_HOST }}
       MC_PORT:        ${{ secrets.MC_PORT }}
+      GH_PAT:         ${{ secrets.GH_PAT }}
+      MS_AUTH_CACHE:  ${{ secrets.MS_AUTH_CACHE }}
       # Add any other secrets your bots require, e.g. OAUTH_TOKEN: ${{ secrets.OAUTH_TOKEN }}
 
     steps:
