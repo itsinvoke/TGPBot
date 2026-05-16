@@ -1,207 +1,101 @@
-name: 🤖 Guard Bot + Discord Bot
-
+# Run the bots with repository secrets injected into the job environment.
+# WARNING: Secrets are NOT provided to workflows triggered by forks (pull requests from forks).
+# Use push/workflow_dispatch or configure a secure pull_request_target pattern if you need to handle PRs.
 on:
-  # Manual trigger from the Actions tab
+  push:
+    branches: [ main ]
   workflow_dispatch:
-
-  # Auto-restart: triggered by the workflow itself every ~6 hours.
-  # Also acts as a cold-start schedule if the self-trigger ever fails.
-  schedule:
-    - cron: '0 */6 * * *'
-
-# Cancel any already-running instance before starting a new one
-# so you never have two bots online at the same time.
-concurrency:
-  group: guard-bot-singleton
-  cancel-in-progress: true
 
 jobs:
   run-bots:
-    name: Run Guard Bot & Discord Bot
+    name: Run Guard + Discord bots (with secrets)
     runs-on: ubuntu-latest
 
-    # Hard ceiling: GitHub allows 6 hours max on public repos.
-    # We self-trigger at 5h 50m and exit cleanly before this kicks in.
-    timeout-minutes: 360
+    # Map repository secrets into the job environment so Node sees them as process.env.*
+    env:
+      # Required: set these exact names in your repository Secrets → Actions
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+      MC_USERNAME:    ${{ secrets.MC_USERNAME }}
+      MC_PASSWORD:    ${{ secrets.MC_PASSWORD }}
+      MC_HOST:        ${{ secrets.MC_HOST }}
+      MC_PORT:        ${{ secrets.MC_PORT }}
+      # Add any other secrets your bots require, e.g. OAUTH_TOKEN: ${{ secrets.OAUTH_TOKEN }}
 
     steps:
-      # ── 1. Checkout ────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Node.js ─────────────────────────────────────────────────────────
-      - name: Set up Node.js 20
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "22"
 
-      # ── 3. Dependencies ────────────────────────────────────────────────────
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
-      # ── 4. Restore Microsoft auth token cache ──────────────────────────────
-      # mineflayer caches the Microsoft OAuth token after first login.
-      # Encode the cache file as base64 and store it in the secret
-      # MS_AUTH_CACHE. On first run you must authenticate locally,
-      # then base64-encode ~/.minecraft/nmp-cache/*.json and save as the secret.
-      - name: Restore Microsoft auth token cache
-        if: ${{ env.MS_AUTH_CACHE != '' }}
-        env:
-          MS_AUTH_CACHE: ${{ secrets.MS_AUTH_CACHE }}
+      - name: Verify required secrets are present
         run: |
-          mkdir -p ~/.minecraft/nmp-cache
-          echo "$MS_AUTH_CACHE" | base64 -d > ~/.minecraft/nmp-cache/mineflayer.json
-          echo "[AUTH] Token cache restored."
+          missing=0
+          check() {
+            if [ -z "${!1}" ]; then
+              echo "::error::Missing required env $1"
+              missing=1
+            else
+              echo "$1 present"
+            fi
+          }
+          # List the env vars you need validated (do NOT echo values)
+          check DISCORD_TOKEN
+          check MC_USERNAME
+          # comment/uncomment additional checks as needed:
+          check MC_PASSWORD
+          check MC_HOST
+          check MC_PORT
 
-      # ── 5. Write .env from secrets ─────────────────────────────────────────
-      - name: Write .env file
-        env:
-          MC_HOST:              ${{ secrets.MC_HOST }}
-          MC_PORT:              ${{ secrets.MC_PORT }}
-          MC_USERNAME:          ${{ secrets.MC_USERNAME }}
-          MC_VERSION:           ${{ secrets.MC_VERSION }}
-          MC_TIMEOUT:           ${{ secrets.MC_TIMEOUT }}
-          DISCORD_TOKEN:        ${{ secrets.DISCORD_TOKEN }}
-          ALERT_CHANNEL_ID:     ${{ secrets.ALERT_CHANNEL_ID }}
-          ADMIN_CHANNEL_ID:     ${{ secrets.ADMIN_CHANNEL_ID }}
-          GUARD_WEBHOOK_URL:    ${{ secrets.GUARD_WEBHOOK_URL }}
-          GUARD_ALERT_ROLE_ID:  ${{ secrets.GUARD_ALERT_ROLE_ID }}
-          GUARD_HTTP_PORT:      ${{ secrets.GUARD_HTTP_PORT }}
-          DISCORD_HTTP_PORT:    ${{ secrets.DISCORD_HTTP_PORT }}
-          COMMAND_ADMIN_ROLE_ID: ${{ secrets.COMMAND_ADMIN_ROLE_ID }}
-          WHITELIST:            ${{ secrets.WHITELIST }}
-          CLAN_AD:              ${{ secrets.CLAN_AD }}
-        run: |
-          cat > .env <<EOF
-          MC_HOST=${MC_HOST:-alt.6b6t.org}
-          MC_PORT=${MC_PORT:-25565}
-          MC_USERNAME=${MC_USERNAME}
-          MC_VERSION=${MC_VERSION:-1.20.1}
-          MC_TIMEOUT=${MC_TIMEOUT:-120000}
-          DISCORD_TOKEN=${DISCORD_TOKEN}
-          ALERT_CHANNEL_ID=${ALERT_CHANNEL_ID}
-          ADMIN_CHANNEL_ID=${ADMIN_CHANNEL_ID}
-          GUARD_WEBHOOK_URL=${GUARD_WEBHOOK_URL}
-          GUARD_ALERT_ROLE_ID=${GUARD_ALERT_ROLE_ID}
-          GUARD_HTTP_PORT=${GUARD_HTTP_PORT:-3001}
-          DISCORD_HTTP_PORT=${DISCORD_HTTP_PORT:-3002}
-          COMMAND_ADMIN_ROLE_ID=${COMMAND_ADMIN_ROLE_ID}
-          WHITELIST=${WHITELIST}
-          CLAN_AD=${CLAN_AD}
-          EOF
-          echo "[ENV] .env file written."
-
-      # ── 6. Start Discord bot in background ────────────────────────────────
-      - name: Start Discord Bot
-        run: |
-          node discord_bot.js >> logs/discord_bot.log 2>&1 &
-          echo "DISCORD_PID=$!" >> $GITHUB_ENV
-          mkdir -p logs
-          echo "[DISCORD] Started with PID $!"
-
-      # ── 7. Start Guard bot in background ─────────────────────────────────
-      - name: Start Guard Bot
-        run: |
-          mkdir -p logs
-          node guard_bot.js >> logs/guard_bot.log 2>&1 &
-          echo "GUARD_PID=$!" >> $GITHUB_ENV
-          echo "[GUARD] Started with PID $!"
-
-      # ── 8. Monitor for 5 hours 50 minutes then trigger restart ────────────
-      # Streams live logs to the Actions console.
-      # After 5h50m (21000s) we dispatch the next workflow run,
-      # then let the processes die naturally when the job ends.
-      - name: Monitor bots (5h 50m then auto-restart)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO:     ${{ github.repository }}
-          WORKFLOW: ${{ github.workflow }}
-        run: |
-          echo "[MONITOR] Bots running. Streaming logs..."
-          echo "[MONITOR] Will self-restart in 5h 50m."
-
-          # Stream both log files live to the Actions console
-          tail -F logs/guard_bot.log logs/discord_bot.log &
-          TAIL_PID=$!
-
-          # Sleep 5h 50m  (21000 seconds)
-          sleep 21000
-
-          echo ""
-          echo "[MONITOR] 5h 50m elapsed — triggering next workflow run..."
-
-          # Trigger the workflow again via GitHub API
-          gh api \
-            --method POST \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${REPO}/actions/workflows/${WORKFLOW}.yml/dispatches" \
-            -f ref=main \
-            && echo "[MONITOR] ✅ Next run triggered successfully." \
-            || echo "[MONITOR] ⚠️  Failed to trigger next run — the cron schedule will catch it."
-
-          # Give the new run a few seconds to register before we exit
-          sleep 10
-
-          kill $TAIL_PID 2>/dev/null || true
-          echo "[MONITOR] Exiting — next run is queued."
-
-      # ── 9. Save updated auth token cache after run ─────────────────────────
-      # Keeps the Microsoft token fresh across restarts.
-      # Requires: ACTIONS_RUNTIME_TOKEN scope in the workflow,
-      # and a PAT (GH_PAT) with `secrets:write` stored as a secret.
-      - name: Save updated Microsoft auth cache
-        if: always()
-        env:
-          GH_PAT:  ${{ secrets.GH_PAT }}
-          REPO:    ${{ github.repository }}
-        run: |
-          CACHE_FILE=$(find ~/.minecraft/nmp-cache -name "*.json" 2>/dev/null | head -1)
-          if [ -z "$CACHE_FILE" ]; then
-            echo "[AUTH] No cache file found — skipping save."
-            exit 0
-          fi
-          ENCODED=$(base64 -w 0 "$CACHE_FILE")
-
-          # Update the MS_AUTH_CACHE secret via the GitHub API
-          # (requires a PAT with repo + secrets:write scopes stored as GH_PAT)
-          if [ -n "$GH_PAT" ]; then
-            # Get the public key for secret encryption
-            KEY_RESP=$(curl -sS \
-              -H "Authorization: token $GH_PAT" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${REPO}/actions/secrets/public-key")
-
-            KEY_ID=$(echo "$KEY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['key_id'])")
-            PUB_KEY=$(echo "$KEY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['key'])")
-
-            ENCRYPTED=$(python3 - <<PYEOF
-          import base64, sys
-          from nacl import encoding, public
-
-          pub_key = public.PublicKey(base64.b64decode("$PUB_KEY"))
-          box = public.SealedBox(pub_key)
-          encrypted = box.encrypt(b"$ENCODED")
-          print(base64.b64encode(encrypted).decode())
-          PYEOF
-            )
-
-            curl -sS -X PUT \
-              -H "Authorization: token $GH_PAT" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${REPO}/actions/secrets/MS_AUTH_CACHE" \
-              -d "{\"encrypted_value\":\"$ENCRYPTED\",\"key_id\":\"$KEY_ID\"}" \
-              && echo "[AUTH] Token cache saved to secret." \
-              || echo "[AUTH] Failed to save token cache."
-          else
-            echo "[AUTH] GH_PAT not set — cannot update MS_AUTH_CACHE secret automatically."
+          if [ "$missing" -eq 1 ]; then
+            echo "::error::One or more required secrets are missing. See repository Settings → Secrets → Actions."
+            exit 1
           fi
 
-      # ── 10. Upload logs as artifact ────────────────────────────────────────
-      - name: Upload bot logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: bot-logs-${{ github.run_number }}
-          path: logs/
-          retention-days: 7
+      - name: Basic environment debug (non-sensitive)
+        # Shows which Node is used and prints process.env keys count without printing secret values
+        run: |
+          node -v
+          echo "Installed node version above"
+          # Print non-secret confirmation: how many env vars are set (do NOT print values)
+          echo "Env vars count: $(env | wc -l)"
+
+      - name: Start bots (runs until process exits or action times out)
+        # This step will start both bots. If your bots run continuously, this job will stay running until they exit or the job times out.
+        # If you prefer to run a short smoke test instead, replace these commands with a script that runs for a limited time.
+        run: |
+          # Start guard bot in background and capture PID
+          nohup node guard_bot.js > guard_bot.log 2>&1 &
+          GUARD_PID=$!
+          echo "Guard bot started with PID $GUARD_PID (logs: guard_bot.log)"
+
+          # Start discord bot in background and capture PID
+          nohup node discord_bot.js > discord_bot.log 2>&1 &
+          DISCORD_PID=$!
+          echo "Discord bot started with PID $DISCORD_PID (logs: discord_bot.log)"
+
+          # Give them a few seconds to initialize, then show the last lines of logs (safe to show)
+          sleep 8
+          echo "----- guard_bot.log (tail) -----"
+          tail -n 100 guard_bot.log || true
+          echo "----- discord_bot.log (tail) -----"
+          tail -n 100 discord_bot.log || true
+
+          # Optional: wait for both processes (comment out to let the job complete and leave them running)
+          # wait $GUARD_PID $DISCORD_PID
+
+        # If you want the action to stop after a short smoke-test instead of running indefinitely,
+        # either remove the `wait` and let the job complete (processes will be killed when runner finishes),
+        # or add `sleep 300` (run for 5 minutes) and then kill the processes:
+        #
+        # run: |
+        #   nohup node guard_bot.js > guard_bot.log 2>&1 & GUARD_PID=$!
+        #   nohup node discord_bot.js > discord_bot.log 2>&1 & DISCORD_PID=$!
+        #   sleep 300
+        #   kill $GUARD_PID $DISCORD_PID || true
+        #   tail -n 200 guard_bot.log discord_bot.log
