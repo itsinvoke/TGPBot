@@ -504,6 +504,18 @@ function registerBotEvents (bot) {
       hasDoneInitialLobbyLogin = true ; isFullyInServer = false
       console.log('Lobby login successful! Walking into portal...')
 
+      // DISABLE pathfinder so manual control isn't overridden; walk manually into portal
+      try {
+        if (bot.pathfinder && typeof bot.pathfinder.setGoal === 'function') {
+          bot.pathfinder.setGoal(null)
+        }
+        // remove reference to plugin to prevent accidental reuse
+        delete bot.pathfinder
+        console.log('[PATHFINDER] Disabled pathfinder for manual portal walk')
+      } catch (err) {
+        console.warn('[PATHFINDER] Failed to disable pathfinder:', err && err.message ? err.message : err)
+      }
+
       const startDimension = bot.game?.dimension
       bot.setControlState('forward', true)
       bot.setControlState('sprint',  true)
